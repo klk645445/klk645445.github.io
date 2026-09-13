@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Project 1: Colorizing the Prokudin-Gorskii Photo Collection</title>
+    <link rel="stylesheet" href="../style.css">
+    <style>
+        table { border-collapse: collapse; margin: 20px 0; font-size: 15px; }
+        th, td { text-align: left; padding: 6px 18px 6px 0; border-bottom: 1px solid #eee; }
+        th { color: #555; font-weight: normal; border-bottom: 1px solid #ccc; }
+        code { font-family: Menlo, monospace; font-size: 14px; background: #f4f4f4; padding: 1px 4px; }
+    </style>
+</head>
+<body>
+    <nav><a href="../index.html">Back to portfolio</a></nav>
+
+    <h1>Project 1: Colorizing the Prokudin-Gorskii Photo Collection</h1>
+    <p class="date">CS180, Fall 2026</p>
+
+    <p>
+        Sergei Prokudin-Gorskii took color photos in the early 1900s by shooting the same scene three times, through a
+        blue, a green and a red filter, and stacking the three exposures on one glass plate, blue on top, then green,
+        then red. The goal of this project is to turn those plates back into color images. Whats challenging about this project
+        in particular is that the three exposures don't line up exactly, so the goal is to create an algorithm that lines up these images nearly perfectly.
+        
+    </p>
+
+    <h2>Part 1: Single-Scale Alignment</h2>
+
+    <h3>Approach</h3>
+    <p>
+        I split each plate into three equal pieces and used the blue channel as the reference. Green and red are each
+        aligned to blue separately. For each one, I try every displacement from -15 to 15 pixels in both directions,
+        961 candidates in total, shift the channel with <code>np.roll</code>, score it against blue, and keep the shift
+        with the best score.
+    </p>
+    <p>
+        All offsets on this page are written as <code>(dy, dx)</code>: the shift applied to that channel to line it up
+        with blue, where positive <code>dy</code> moves it down and positive <code>dx</code> moves it right.
+    </p>
+
+    <figure class="solo">
+        <img src="out_path/cathedral_unaligned.jpg" alt="Cathedral with channels stacked without alignment">
+        <figcaption><strong>No alignment.</strong> The three channels stacked as-is. Every edge has color fringes.</figcaption>
+    </figure>
+
+    <h3>Metrics</h3>
+    <p>
+        I implemented two ways of scoring a match. <strong>SSD</strong> (sum of squared differences) subtracts the two
+        images pixel by pixel, squares and sums, so lower means a better match. <strong>NCC</strong> (normalized
+        cross-correlation) subtracts each image's mean, divides each by its length so both are unit vectors, and takes
+        the dot product, so higher means a better match, with 1 being perfect.
+    </p>
+    <p>
+        Since the two metrics point in opposite directions, my NCC function returns the negative of the correlation.
+        That way lower is better for both, and the same search loop works with either metric passed in.
+    </p>
+
+    <h3>The border problem</h3>
+    <p>
+        My first version scored the entire image and gave G (1, -1) and R (7, -1) for the cathedral, which is wrong.
+        The result was still visibly misaligned. What stood out was that both offsets were too small, pulled toward
+        zero. That pointed at two problems at the edges of the image.
+    </p>
+    <p>
+        First, <code>np.roll</code> wraps around. Shifting by 12 pixels takes the bottom 12 rows and pastes them onto
+        the top, where they don't match anything. The bigger the shift, the more wrapped rows there are, so larger
+        shifts get penalized and the search prefers smaller ones. Second, each plate has black and bright borders from
+        the scan that aren't part of the photo and never match at any shift.
+    </p>
+    <p>
+        Both problems are at the edges, so the fix was to only score the middle of the image. I crop 15% off each side
+        of the shifted channel and of the reference before computing the score. On the cathedral that means scoring a
+        239 &times; 274 interior instead of the full 341 &times; 390. The crop happens after shifting, so the wrapped
+        rows get cut off. I tried crops of 10%, 15% and 20% with both SSD and NCC, and all six runs gave the same answer, so the result
+        isn't sensitive to the exact value.
+    </p>
+
+    <div class="pair">
+        <figure>
+            <img src="out_path/cathedral_nocrop.jpg" alt="Cathedral aligned while scoring the whole image">
+            <figcaption><strong>Scoring the whole image.</strong> G (1, -1), R (7, -1). Still misaligned.</figcaption>
+        </figure>
+        <figure>
+            <img src="out_path/cathedral_ssd_align.jpg" alt="Cathedral aligned while scoring the interior">
+            <figcaption><strong>Scoring the interior only.</strong> G (5, 2), R (12, 3).</figcaption>
+        </figure>
+    </div>
+
+    <h3>Results</h3>
+
+    <table>
+        <tr><th>Image</th><th>Metric</th><th>Green (dy, dx)</th><th>Red (dy, dx)</th></tr>
+        <tr><td>cathedral</td><td>SSD</td><td>(5, 2)</td><td>(12, 3)</td></tr>
+        <tr><td>cathedral</td><td>NCC</td><td>(5, 2)</td><td>(12, 3)</td></tr>
+        <tr><td>monastery</td><td>SSD</td><td>(-3, 2)</td><td>(3, 2)</td></tr>
+        <tr><td>monastery</td><td>NCC</td><td>(-3, 2)</td><td>(3, 2)</td></tr>
+        <tr><td>tobolsk</td><td>SSD</td><td>(3, 3)</td><td>(6, 3)</td></tr>
+        <tr><td>tobolsk</td><td>NCC</td><td>(3, 3)</td><td>(6, 3)</td></tr>
+    </table>
+
+    <div class="pair">
+        <figure>
+            <img src="out_path/cathedral_ssd_align.jpg" alt="Cathedral">
+            <figcaption><strong>cathedral</strong><br>G (5, 2), R (12, 3)</figcaption>
+        </figure>
+        <figure>
+            <img src="out_path/monastery_ssd_align.jpg" alt="Monastery">
+            <figcaption><strong>monastery</strong><br>G (-3, 2), R (3, 2)</figcaption>
+        </figure>
+        <figure>
+            <img src="out_path/tobolsk_ssd_align.jpg" alt="Tobolsk">
+            <figcaption><strong>tobolsk</strong><br>G (3, 3), R (6, 3)</figcaption>
+        </figure>
+    </div>
+
+    <h3>SSD vs NCC</h3>
+    <p>
+        Both metrics found exactly the same offsets on all three images. That makes sense given how they differ. NCC
+        subtracts the mean and normalizes, so it doesn't care if one channel is brighter or has more contrast than the
+        other, it only cares whether the two images go up and down together. SSD compares raw pixel values, so it
+        does care. These three plates were exposed similarly enough that the difference didn't matter. I expect NCC
+        to be the safer choice on harder plates where the channels differ more in brightness.
+    </p>
+
+    <h2>Part 2: Multiscale Pyramid Alignment</h2>
+
+    <h3>Why brute force doesn't scale</h3>
+    <p>
+        The full-resolution TIFFs are about 3200 &times; 3700 pixels per channel, roughly 90 times more pixels than the
+        JPEGs, and the channels are misaligned by much more. The largest offset in my results is 178 pixels. A
+        &plusmn;15 search can't reach that, and a window wide enough to reach it (&plusmn;200) would try about 160,000 shifts
+        instead of 961, each one on a far bigger image.
+    </p>
+    <p>
+        To measure it, I ran the Part 1 brute-force search with SSD on the green channel of church.tif
+        (3202 &times; 3634). The &plusmn;15 search took 8.8 seconds and returned (15, 4), stuck at the edge of the
+        window, when the real offset is (25, 4). That's about 9 milliseconds per candidate, so a &plusmn;200 search
+        would take roughly 25 minutes per channel, or close to an hour per image.
+    </p>
+
+    <h3>Downsampling</h3>
+    <p>
+        The pyramid needs a way to halve an image. I average every 2 &times; 2 block of pixels into one pixel, using
+        step slices so it runs without loops. If a dimension is odd I trim one row or column first, otherwise the
+        four slices end up different sizes. I average instead of just keeping every other pixel because skipping
+        pixels aliases: fine texture like grass or brick turns into fake patterns, and the small image would align to
+        patterns that aren't really in the photo.
+    </p>
+
+    <h3>Coarse to fine</h3>
+    <p>
+        The alignment is recursive. If the image's shorter side is 400 pixels or less, it runs the normal &plusmn;15
+        search from Part 1 and returns. Otherwise it calls itself on half-size versions of both images, doubles the
+        offset that comes back to scale it to the current size, shifts the image by that guess, and runs a small
+        &plusmn;2 search to fix the pixel or two lost to rounding. The final offset is the guess plus that small
+        correction.
+    </p>
+    <p>
+        So a large offset gets found as a small one on a tiny image, and every level on the way back up only checks
+        25 candidates. The only full &plusmn;15 search happens once, at the smallest size. The 15% interior crop from
+        Part 1 still applies at every level, since it's a fraction of the image size.
+    </p>
+    <p>
+        To test it, I shifted the church blue channel by a known (100, -40), far outside the &plusmn;15 window, and
+        aligned it against the original. It returned (-100, 40), the shift that undoes it, in under a second.
+    </p>
+
+    <h3>Results</h3>
+    <p>
+        One set of parameters for every image: 15% crop, base case at 400 pixels, &plusmn;15 at the base and
+        &plusmn;2 per level. Times are for aligning both channels, not including loading or saving.
+    </p>
+
+    <table>
+        <tr><th>Image</th><th>SSD Green</th><th>SSD Red</th><th>NCC Green</th><th>NCC Red</th><th>SSD time</th><th>NCC time</th></tr>
+        <tr><td>cathedral.jpg</td><td>(5, 2)</td><td>(12, 3)</td><td>(5, 2)</td><td>(12, 3)</td><td>0.27s</td><td>0.61s</td></tr>
+        <tr><td>monastery.jpg</td><td>(-3, 2)</td><td>(3, 2)</td><td>(-3, 2)</td><td>(3, 2)</td><td>0.28s</td><td>0.59s</td></tr>
+        <tr><td>tobolsk.jpg</td><td>(3, 3)</td><td>(6, 3)</td><td>(3, 3)</td><td>(6, 3)</td><td>0.28s</td><td>0.58s</td></tr>
+        <tr><td>church.tif</td><td>(25, 4)</td><td>(58, -4)</td><td>(25, 4)</td><td>(58, -4)</td><td>1.84s</td><td>3.38s</td></tr>
+        <tr><td>emir.tif</td><td>(49, 24)</td><td>(66, 44)</td><td>(49, 24)</td><td>(64, 44)</td><td>1.49s</td><td>2.85s</td></tr>
+        <tr><td>harvesters.tif</td><td>(59, 17)</td><td>(124, 13)</td><td>(60, 17)</td><td>(124, 14)</td><td>1.48s</td><td>2.88s</td></tr>
+        <tr><td>icon.tif</td><td>(41, 17)</td><td>(89, 23)</td><td>(41, 17)</td><td>(89, 23)</td><td>1.56s</td><td>2.92s</td></tr>
+        <tr><td>ilemselga.tif</td><td>(40, 7)</td><td>(130, 11)</td><td>(40, 7)</td><td>(130, 11)</td><td>1.52s</td><td>2.94s</td></tr>
+        <tr><td>melons.tif</td><td>(81, 10)</td><td>(178, 14)</td><td>(81, 10)</td><td>(178, 14)</td><td>1.47s</td><td>2.94s</td></tr>
+        <tr><td>religous_painting.tif</td><td>(28, 3)</td><td>(69, 7)</td><td>(28, 3)</td><td>(68, 7)</td><td>1.72s</td><td>3.47s</td></tr>
+        <tr><td>self_portrait.tif</td><td>(78, 29)</td><td>(176, 37)</td><td>(79, 29)</td><td>(176, 37)</td><td>1.55s</td><td>3.08s</td></tr>
+        <tr><td>siren.tif</td><td>(50, -6)</td><td>(96, -25)</td><td>(49, -6)</td><td>(96, -25)</td><td>2.02s</td><td>2.89s</td></tr>
+        <tr><td>three_generations.tif</td><td>(52, 14)</td><td>(111, 11)</td><td>(52, 14)</td><td>(111, 11)</td><td>1.80s</td><td>2.76s</td></tr>
+        <tr><td>wharf.tif</td><td>(15, -7)</td><td>(82, -16)</td><td>(15, -7)</td><td>(82, -16)</td><td>1.65s</td><td>2.93s</td></tr>
+        <tr><td>piony.tif</td><td>(51, 3)</td><td>(105, -6)</td><td>(51, 3)</td><td>(104, -6)</td><td>1.94s</td><td>3.40s</td></tr>
+        <tr><td>person_in_woods.tif</td><td>(50, -21)</td><td>(148, -42)</td><td>(50, -21)</td><td>(148, -42)</td><td>1.60s</td><td>3.01s</td></tr>
+        <tr><td>cotton_texttile_mill.tif</td><td>(58, -12)</td><td>(134, -57)</td><td>(58, -13)</td><td>(134, -58)</td><td>1.55s</td><td>2.97s</td></tr>
+    </table>
+
+    <p>
+        Every TIFF aligned in about 1.5 to 2 seconds with SSD and about 3 to 3.5 seconds with NCC, well below the
+        one-minute target.
+        NCC takes about twice as long because it computes a mean, a subtraction and a norm for every candidate shift.
+        The two metrics agree exactly or within one pixel on every image. The three JPEGs give the same offsets as
+        brute force, because their shorter side is under 400 pixels, so they go straight to the base case.
+    </p>
+    <p>
+        The images below use NCC. The blue-purple tint and the colored strips along the edges aren't alignment errors.
+        The tint is because the three channels have different overall brightness, and the strips are the plate's
+        scanned border plus the rows that <code>np.roll</code> wrapped around.
+    </p>
+
+    <div class="pair">
+        <figure><img src="out_path/cathedral_ncc_align_pyramid.jpg" alt="cathedral"><figcaption><strong>cathedral</strong><br>G (5, 2), R (12, 3)</figcaption></figure>
+        <figure><img src="out_path/monastery_ncc_align_pyramid.jpg" alt="monastery"><figcaption><strong>monastery</strong><br>G (-3, 2), R (3, 2)</figcaption></figure>
+        <figure><img src="out_path/tobolsk_ncc_align_pyramid.jpg" alt="tobolsk"><figcaption><strong>tobolsk</strong><br>G (3, 3), R (6, 3)</figcaption></figure>
+    </div>
+    <div class="pair">
+        <figure><img src="out_path/church_ncc_align_pyramid.jpg" alt="church"><figcaption><strong>church</strong><br>G (25, 4), R (58, -4)</figcaption></figure>
+        <figure><img src="out_path/harvesters_ncc_align_pyramid.jpg" alt="harvesters"><figcaption><strong>harvesters</strong><br>G (60, 17), R (124, 14)</figcaption></figure>
+        <figure><img src="out_path/icon_ncc_align_pyramid.jpg" alt="icon"><figcaption><strong>icon</strong><br>G (41, 17), R (89, 23)</figcaption></figure>
+    </div>
+    <div class="pair">
+        <figure><img src="out_path/ilemselga_ncc_align_pyramid.jpg" alt="ilemselga"><figcaption><strong>ilemselga</strong><br>G (40, 7), R (130, 11)</figcaption></figure>
+        <figure><img src="out_path/melons_ncc_align_pyramid.jpg" alt="melons"><figcaption><strong>melons</strong><br>G (81, 10), R (178, 14)</figcaption></figure>
+        <figure><img src="out_path/religous_painting_ncc_align_pyramid.jpg" alt="religious painting"><figcaption><strong>religous_painting</strong><br>G (28, 3), R (68, 7)</figcaption></figure>
+    </div>
+    <div class="pair">
+        <figure><img src="out_path/self_portrait_ncc_align_pyramid.jpg" alt="self portrait"><figcaption><strong>self_portrait</strong><br>G (79, 29), R (176, 37)</figcaption></figure>
+        <figure><img src="out_path/siren_ncc_align_pyramid.jpg" alt="siren"><figcaption><strong>siren</strong><br>G (49, -6), R (96, -25)</figcaption></figure>
+        <figure><img src="out_path/three_generations_ncc_align_pyramid.jpg" alt="three generations"><figcaption><strong>three_generations</strong><br>G (52, 14), R (111, 11)</figcaption></figure>
+    </div>
+    <div class="pair">
+        <figure><img src="out_path/wharf_ncc_align_pyramid.jpg" alt="wharf"><figcaption><strong>wharf</strong><br>G (15, -7), R (82, -16)</figcaption></figure>
+        <figure><img src="out_path/emir_ncc_align_pyramid.jpg" alt="emir, misaligned"><figcaption><strong>emir (failed)</strong><br>G (49, 24), R (64, 44)</figcaption></figure>
+    </div>
+
+    <h3>The failure: emir</h3>
+    <p>
+        Emir is the one image that didn't align. Green is fine, but red came out at (64, 44) with NCC and (66, 44) with
+        SSD, when it should be about (107, 40). Red sits roughly 40 rows too high, which you can see as a red copy of
+        the turban above the real one and doubled eyes.
+    </p>
+    <p>
+        The reason is the Emir's robe. It's bright blue, so it's very bright on the blue plate and very dark on the
+        red plate. Both of my metrics compare brightness, so the red channel doesn't look like the blue one at any
+        shift, and the search settles on a wrong position that happens to score a little better. NCC doesn't save it
+        either. NCC ignores a brightness offset or contrast change across the whole image, but here the channels
+        differ in opposite directions in different parts of the picture: the robe is much brighter in blue, while
+        the wall behind him isn't. No single offset or scale can make them match.
+    </p>
+    <p>
+        A way to fix this would be to align on edges instead of brightness, since the outline of the robe is an edge
+        in every channel even though its brightness isn't the same.
+    </p>
+
+    <h3>Images of my choice</h3>
+    <p>
+        I picked three more plates from the Library of Congress Prokudin-Gorskii collection and ran them with the same
+        parameters. All three aligned.
+    </p>
+
+    <ul>
+        <li><strong>piony</strong>: <a href="https://www.loc.gov/item/2018679048/">"Pīony"</a> (Peonies)</li>
+        <li><strong>person_in_woods</strong>: <a href="https://www.loc.gov/item/2018679183/">"Ėti͡ud. V li͡esu u vodopada Kivach. [Ri͡eka Suna]"</a> (Study. In the forest near the Kivach waterfall, Suna River)</li>
+        <li><strong>cotton_texttile_mill</strong>: <a href="https://www.loc.gov/item/2018681303/">"[Cotton textile mill interior, probably in Tashkent]"</a></li>
+    </ul>
+
+    <div class="pair">
+        <figure><img src="out_path/piony_ncc_align_pyramid.jpg" alt="peonies"><figcaption><strong>Peonies</strong><br>G (51, 3), R (104, -6)</figcaption></figure>
+        <figure><img src="out_path/person_in_woods_ncc_align_pyramid.jpg" alt="a man with a rifle walking down a forest road"><figcaption><strong>In the forest near Kivach waterfall</strong><br>G (50, -21), R (148, -42)</figcaption></figure>
+        <figure><img src="out_path/cotton_texttile_mill_ncc_align_pyramid.jpg" alt="cotton textile mill interior"><figcaption><strong>Cotton textile mill interior</strong><br>G (58, -13), R (134, -58)</figcaption></figure>
+    </div>
+</body>
+</html>

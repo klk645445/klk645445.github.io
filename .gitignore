@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Project 1 source plates: ~880 MB of TIFFs, not served by the site
+1/data/
+1/code/
