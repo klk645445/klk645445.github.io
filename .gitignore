@@ -9,3 +9,9 @@ __pycache__/
 # Project 1 source plates: ~880 MB of TIFFs, not served by the site
 1/data/
 1/code/
+
+# Project 2 source photos: iPhone originals carry GPS location, not served by the site
+2/data/
+
+# Project 2 code: course says not to host code publicly
+2/code/
