@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Project 4 · Stitching Photo Mosaics</title>
+    <link rel="stylesheet" href="../style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+            onload="renderMathInElement(document.body, {delimiters: [{left: '\\[', right: '\\]', display: true}, {left: '\\(', right: '\\)', display: false}]});"></script>
+    <style>
+        code { font-family: Menlo, monospace; font-size: 14px; background: #f4f4f4; padding: 1px 4px; }
+        pre { background: #f4f4f4; padding: 12px 16px; overflow-x: auto; font-size: 14px; }
+        pre code { background: none; padding: 0; }
+        .wide { margin: 22px 0; }
+        .wide img { width: 100%; border: 1px solid #ddd; }
+        /* three source photos in a row, they are portrait so they can be narrower */
+        .trio figure { min-width: 180px; }
+        /* the mosaics are white outside the photos, no border needed */
+        .mosaic img { border: none; }
+        /* wide equations scroll sideways on a phone instead of running off the page */
+        .katex-display { overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+        /* shown until a result image is dropped into out_path */
+        .missing { border: 2px dashed #c9c9c9; background: #fafafa; color: #999; font-size: 14px;
+                   padding: 28px 12px; text-align: center; }
+    </style>
+    <script>
+        //swap a missing result image for a labeled placeholder box
+        function missing(img) {
+            const box = document.createElement("div");
+            box.className = "missing";
+            box.textContent = "result pending, " + img.getAttribute("src");
+            img.replaceWith(box);
+        }
+    </script>
+</head>
+<body>
+    <nav><a href="../index.html">Back to portfolio</a></nav>
+
+    <h1>Project 4 · Stitching Photo Mosaics</h1>
+    <p class="date">CS180, Fall 2026</p>
+
+    <p>
+        This project stitches several photos into one wider image. Part A does it by hand. I click matching points
+        between photos, recover the homography that maps one photo onto the other, warp the photos with my own
+        inverse warping code, and blend them into a mosaic.
+    </p>
+
+    <!-- ================================================================== -->
+    <h2>Part A · Image Warping and Mosaicing</h2>
+
+    <h3>A.1 Shooting the Pictures</h3>
+    <p>
+        A homography can only line up two photos if they were taken from the same center of projection, so for every
+        scene I stood in one spot and only rotated the phone, keeping around half of each frame overlapping the next.
+        Each set is three shots (left, center, right) taken within a few seconds of each other on the iPhone 17 Pro
+        Max main camera. Two sets are of the International House courtyard and entrance, and one is the intersection
+        outside it at sunset. The photos are 4284 by 5712, so all the code works on copies scaled down to 2000 pixels
+        on the long side.
+    </p>
+    <p>
+        I also shot a fourth set from a balcony over the courtyard, but the railing was only about a meter from the
+        phone. Rotating the phone in my hand moved the lens a few centimeters, and that was enough for the railing to
+        shift against the building behind it, so no single homography could line up both. I left that set out.
+    </p>
+    <div class="pair trio">
+        <figure><img src="out_path/tower_left.jpg" alt="tower left" onerror="missing(this)"><figcaption>Courtyard, left</figcaption></figure>
+        <figure><img src="out_path/tower_center.jpg" alt="tower center" onerror="missing(this)"><figcaption>Courtyard, center</figcaption></figure>
+        <figure><img src="out_path/tower_right.jpg" alt="tower right" onerror="missing(this)"><figcaption>Courtyard, right</figcaption></figure>
+    </div>
+    <div class="pair trio">
+        <figure><img src="out_path/street_left.jpg" alt="street left" onerror="missing(this)"><figcaption>Street, left</figcaption></figure>
+        <figure><img src="out_path/street_center.jpg" alt="street center" onerror="missing(this)"><figcaption>Street, center</figcaption></figure>
+        <figure><img src="out_path/street_right.jpg" alt="street right" onerror="missing(this)"><figcaption>Street, right</figcaption></figure>
+    </div>
+    <div class="pair trio">
+        <figure><img src="out_path/stairs_left.jpg" alt="stairs left" onerror="missing(this)"><figcaption>Entrance, left</figcaption></figure>
+        <figure><img src="out_path/stairs_center.jpg" alt="stairs center" onerror="missing(this)"><figcaption>Entrance, center</figcaption></figure>
+        <figure><img src="out_path/stairs_right.jpg" alt="stairs right" onerror="missing(this)"><figcaption>Entrance, right</figcaption></figure>
+    </div>
+
+    <h3>A.2 Recovering Homographies</h3>
+    <p>
+        A homography maps a point \(p = (x, y)\) in one image to \(p' = (x', y')\) in the other through homogeneous
+        coordinates, \(p' = Hp\), with \(H\) a \(3 \times 3\) matrix. The overall scale of \(H\) doesn't matter, so I
+        fix the bottom right entry to 1 and that leaves 8 unknowns.
+    </p>
+    \[\begin{bmatrix} w x' \\ w y' \\ w \end{bmatrix} = \begin{bmatrix} a & b & c \\ d & e & f \\ g & h & 1 \end{bmatrix} \begin{bmatrix} x \\ y \\ 1 \end{bmatrix}
+    \qquad x' = \frac{a x + b y + c}{g x + h y + 1} \qquad y' = \frac{d x + e y + f}{g x + h y + 1}\]
+    <p>
+        Multiplying both sides by the denominator makes each equation linear in the unknowns, so every pair of
+        clicked points gives two rows of a linear system \(A\mathbf{h} = \mathbf{b}\).
+    </p>
+    \[\begin{bmatrix}
+        x_1 & y_1 & 1 & 0 & 0 & 0 & -x_1 x_1' & -y_1 x_1' \\
+        0 & 0 & 0 & x_1 & y_1 & 1 & -x_1 y_1' & -y_1 y_1' \\
+        \vdots & & & & & & & \vdots \\
+        x_n & y_n & 1 & 0 & 0 & 0 & -x_n x_n' & -y_n x_n' \\
+        0 & 0 & 0 & x_n & y_n & 1 & -x_n y_n' & -y_n y_n'
+    \end{bmatrix}
+    \begin{bmatrix} a \\ b \\ c \\ d \\ e \\ f \\ g \\ h \end{bmatrix}
+    =
+    \begin{bmatrix} x_1' \\ y_1' \\ \vdots \\ x_n' \\ y_n' \end{bmatrix}\]
+    <p>
+        Four pairs give exactly 8 equations, but a couple of pixels of clicking error then throws \(H\) way off. I
+        clicked 12 to 18 pairs per image pair instead and solved the overdetermined system with least squares,
+        \(\min_{\mathbf{h}} \|A\mathbf{h} - \mathbf{b}\|^2\), using <code>np.linalg.lstsq</code>.
+    </p>
+    <pre><code>def computeH(im1_pts, im2_pts):
+    #im1_pts and im2_pts are n x 2 arrays of (x, y), returns the H with im2 = H im1
+    A = []
+    b = []
+    for (x, y), (xp, yp) in zip(im1_pts, im2_pts):
+        A.append([x, y, 1, 0, 0, 0, -x * xp, -y * xp])
+        A.append([0, 0, 0, x, y, 1, -x * yp, -y * yp])
+        b.append(xp)
+        b.append(yp)
+    #more than 4 points means more equations than unknowns, so solve it with least squares
+    h = np.linalg.lstsq(np.array(A), np.array(b), rcond=None)[0]
+    return np.append(h, 1).reshape(3, 3)</code></pre>
+    <p>
+        I wrote a small matplotlib tool for the clicking. It shows both photos side by side, scrolling zooms in
+        around the mouse so each click can land on the exact corner, and the matching points get the same number and
+        color. My first attempt at the courtyard put all 12 points down a single column of windows. The fit looked
+        fine on those points, but a line of points only pins down the image in one direction, so the warp shot off
+        in streaks everywhere else. Spreading the points over the whole overlap, from the roofline down to the
+        fountain, fixed it.
+    </p>
+    <figure class="wide"><img src="out_path/tower_points_left.jpg" alt="courtyard left correspondences" onerror="missing(this)">
+        <figcaption>18 correspondences between the left and center courtyard photos.</figcaption></figure>
+    <figure class="wide"><img src="out_path/tower_points_right.jpg" alt="courtyard right correspondences" onerror="missing(this)">
+        <figcaption>18 correspondences between the right and center courtyard photos.</figcaption></figure>
+    <p>
+        The recovered homography from the left courtyard photo to the center one is below. The \(g\) and \(h\) entries
+        are tiny, but they get multiplied by pixel coordinates in the hundreds, so they are what bends the left photo
+        into a trapezoid. Pushing the 18 clicked points through it, they land 4.0 pixels from where I clicked on
+        average.
+    </p>
+    \[H_{\text{left}} = \begin{bmatrix} 1.4351 & -0.2084 & -567.59 \\ 0.5153 & 1.2007 & -397.52 \\ 3.40 \times 10^{-4} & -6.25 \times 10^{-5} & 1 \end{bmatrix}\]
+
+    <h3>A.3 Warping the Images</h3>
+    <p>
+        Both warps use inverse warping. Pushing every input pixel forward through \(H\) would leave holes wherever the
+        image gets stretched, so instead I go over every pixel of the output, send it backward through \(H^{-1}\), and
+        read the color at the point where it lands in the input image. The output size comes from sending the 4
+        corners of the input through \(H\) and taking their bounding box. That point almost never lands on an exact
+        pixel, which is where the two interpolation methods differ. I treat \((0, 0)\) as the center of the top left
+        pixel.
+    </p>
+    <ul>
+        <li><strong>Nearest neighbor</strong> rounds \((x, y)\) to the closest pixel center and copies that pixel.</li>
+        <li><strong>Bilinear</strong> takes the 4 pixels around the point and averages them, weighted by how close
+            the point is to each one. With \(x_0 = \lfloor x \rfloor\), \(y_0 = \lfloor y \rfloor\),
+            \(\Delta x = x - x_0\) and \(\Delta y = y - y_0\),</li>
+    </ul>
+    \[\begin{aligned} I(x, y) = \; &(1-\Delta x)(1-\Delta y)\,I[y_0, x_0] + \Delta x(1-\Delta y)\,I[y_0, x_0+1] \\ + \; &(1-\Delta x)\,\Delta y\,I[y_0+1, x_0] + \Delta x\,\Delta y\,I[y_0+1, x_0+1] \end{aligned}\]
+    <p>
+        Output pixels whose source point falls outside the input get nothing. Both functions return an RGBA image
+        whose alpha channel is 1 where the photo landed and 0 elsewhere, which the blending in A.4 uses.
+    </p>
+
+    <h3>Rectification</h3>
+    <p>
+        Rectification tests all of this with a single photo. I photographed two framed pictures on a wall at a steep
+        angle, clicked the 4 corners of each frame, and mapped them to a rectangle. To get the rectangle's shape
+        right, I also took a straight-on photo of each frame and measured its width over height from the 4 corners
+        there, 1.21 for the floor plan and 1.35 for the whiteboard. The rectangle's size comes from the frame's longest
+        side in the photo, so no part of the frame gets shrunk. The output is cropped to the frame plus a margin,
+        because the wall itself stretches off toward the horizon.
+    </p>
+    <div class="pair">
+        <figure><img src="out_path/rectify_floorplan_input.jpg" alt="floor plan input" onerror="missing(this)"><figcaption>The floor plan at an angle, with the 4 clicked corners.</figcaption></figure>
+        <figure><img src="out_path/rectify_floorplan_bilinear.jpg" alt="floor plan rectified" onerror="missing(this)"><figcaption>Rectified with bilinear interpolation.</figcaption></figure>
+    </div>
+    <div class="pair">
+        <figure><img src="out_path/rectify_whiteboard_input.jpg" alt="whiteboard input" onerror="missing(this)"><figcaption>A whiteboard above a doorway, shot looking up.</figcaption></figure>
+        <figure><img src="out_path/rectify_whiteboard_bilinear.jpg" alt="whiteboard rectified" onerror="missing(this)"><figcaption>Rectified with bilinear interpolation.</figcaption></figure>
+    </div>
+    <p>
+        The difference between the two methods is easiest to see up close. Below are the same patches from both
+        results, blown up 4 or 5 times with plain pixel repeats. The far side of each frame had to be stretched about
+        3 times to become a rectangle, so many output pixels map back to the same few input pixels.
+    </p>
+    <figure class="wide"><img src="out_path/rectify_floorplan_zoom.jpg" alt="floor plan zoom" onerror="missing(this)">
+        <figcaption>Small text on the floor plan. Nearest neighbor (left) gives blocky letters with stair step edges, bilinear (right) is smooth.</figcaption></figure>
+    <figure class="wide"><img src="out_path/rectify_whiteboard_zoom.jpg" alt="whiteboard zoom" onerror="missing(this)">
+        <figcaption>The top edge of the whiteboard frame. Nearest neighbor (left) turns the wall texture into a jagged pattern, bilinear (right) keeps it smooth.</figcaption></figure>
+    <p>
+        Full results with <a href="out_path/rectify_floorplan_nn.jpg">nearest neighbor</a> and
+        <a href="out_path/rectify_floorplan_bilinear.jpg">bilinear</a> for the floor plan, and
+        <a href="out_path/rectify_whiteboard_nn.jpg">nearest neighbor</a> and
+        <a href="out_path/rectify_whiteboard_bilinear.jpg">bilinear</a> for the whiteboard.
+    </p>
+    <p>
+        Nearest neighbor took 0.05 seconds on the 1311 by 1080 floor plan output and bilinear took 0.10, and the
+        whiteboard was 0.03 against 0.08. Bilinear does 4 lookups and a weighted sum per pixel instead of 1 lookup, so
+        it is 2 to 3 times slower. Nearest neighbor keeps every pixel exactly as sharp as the input, but anywhere the
+        image is stretched it repeats pixels in blocks and diagonal edges turn into stairs. Bilinear is a little
+        softer since it averages neighbors, but the edges come out clean. Both are fast here because everything is
+        vectorized with numpy, so I used bilinear for the mosaics.
+    </p>
+
+    <h3>A.4 Blending the Images into a Mosaic</h3>
+    <p>
+        For each scene the center photo stays where it is, and the left and right photos get warped into its
+        projection with their own homographies. The steps are
+    </p>
+    <ol>
+        <li>Compute \(H_{\text{left}}\) and \(H_{\text{right}}\) from the clicked points, with \(H_{\text{center}} = I\).</li>
+        <li>Send the corners of all three photos through their homographies and take one bounding box around
+            everything. That is the size of the mosaic.</li>
+        <li>Warp all three photos into that same box with bilinear interpolation, giving three RGBA layers that line up.</li>
+        <li>Match brightness. The phone picks its own exposure for each shot, so I scale each color channel of the
+            side photos so their average matches the center photo where they overlap. The right street photo came out
+            about 20% brighter than the center one and needed a gain of 0.80.</li>
+        <li>Blend the three layers.</li>
+    </ol>
+    <figure class="wide"><img src="out_path/tower_left_warped.jpg" alt="left photo warped" onerror="missing(this)">
+        <figcaption>The left courtyard photo warped into the center photo's projection, on the full mosaic canvas.</figcaption></figure>
+    <p>
+        Each layer gets a weight \(w_i\) equal to how far each pixel is from the edge of that photo (the distance
+        transform of its alpha mask), scaled so it is 1 deep inside the photo and falls to 0 at its border. Plain
+        feathering, a weighted average of the layers with these weights, removes hard seams, but anything that is off
+        by a few pixels between photos shows up twice, faintly. So I used a 2 band blend instead. Each layer is split
+        into a blurry low frequency part \(L_i = G_\sigma * I_i\) with \(\sigma = 6\) and a sharp high frequency part
+        \(H_i = I_i - L_i\). The low frequencies get the weighted average, so brightness and color fade smoothly across
+        the seam, and the high frequencies are taken only from the single photo with the biggest weight at each pixel,
+        so edges never get doubled.
+    </p>
+    \[I_{\text{mosaic}} = \frac{\sum_i w_i\,L_i}{\sum_i w_i} + H_{k}, \qquad k = \arg\max_i\, w_i\]
+    <p>
+        When blurring each layer, I blur the alpha mask the same way and divide by it, so the black empty area
+        outside a photo doesn't leak into its edges.
+    </p>
+    <figure class="wide"><img src="out_path/tower_seams.jpg" alt="seam comparison" onerror="missing(this)">
+        <figcaption>The same seam up close. Pasting each photo over the last (left) cuts the umbrella in half,
+            feathering (middle) leaves a faint second umbrella, and the 2 band blend (right) has neither.</figcaption></figure>
+
+    <h3>Mosaic 1 · International House Courtyard</h3>
+    <figure class="wide mosaic"><img src="out_path/tower_mosaic.jpg" alt="courtyard mosaic" onerror="missing(this)">
+        <figcaption>Three photos looking up at the courtyard. The side wings bend outward because a flat projection
+            stretches everything that is far from the center photo's view direction.</figcaption></figure>
+
+    <h3>Mosaic 2 · Sunset Intersection</h3>
+    <figure class="wide mosaic"><img src="out_path/street_mosaic.jpg" alt="street mosaic" onerror="missing(this)">
+        <figcaption>The sky and road have almost no corners, so most of the clicks are on the building, poles, signs
+            and crosswalk stripes. The crack across the road runs through the seam without a break.</figcaption></figure>
+
+    <h3>Mosaic 3 · International House Entrance</h3>
+    <figure class="wide mosaic"><img src="out_path/stairs_mosaic.jpg" alt="entrance mosaic" onerror="missing(this)">
+        <figcaption>The building lines up cleanly. The lowest steps on the right show a small seam up close, because
+            they were only a few meters from the phone and shifted slightly between shots, the same parallax problem as
+            the balcony set but much smaller.</figcaption></figure>
+
+    <h3>What I Learned</h3>
+    <p>
+        The coolest part was how little it takes. Eight numbers, recovered from a dozen clicks with one least squares
+        solve, are enough to bend one photo so precisely onto another that the seam disappears. The hard part was all
+        in the inputs. The math is only as good as the points, and I learned that the points need to be spread out in
+        both directions, not just accurate, and that a scene only works if everything in it is far enough away that
+        moving the phone slightly doesn't change the view. The balcony set and the bottom steps showed me exactly where
+        the "same center of projection" assumption breaks.
+    </p>
+
+</body>
+</html>
