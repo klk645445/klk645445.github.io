@@ -44,7 +44,9 @@
     <p>
         This project stitches several photos into one wider image. Part A does it by hand. I click matching points
         between photos, recover the homography that maps one photo onto the other, warp the photos with my own
-        inverse warping code, and blend them into a mosaic.
+        inverse warping code, and blend them into a mosaic. Part B does the same thing with no clicking at all. It
+        finds corners in each photo, describes them, matches them between photos, and uses RANSAC to keep only the
+        matches that agree on one homography.
     </p>
 
     <!-- ================================================================== -->
@@ -54,9 +56,9 @@
     <p>
         A homography can only line up two photos if they were taken from the same center of projection, so for every
         scene I stood in one spot and only rotated the phone, keeping around half of each frame overlapping the next.
-        Each set is three shots (left, center, right) taken within a few seconds of each other on the iPhone 17 Pro
+        Each set is three shots, taken from the right, center and left, taken within a few seconds of each other on the iPhone 17 Pro
         Max main camera. Two sets are of the International House courtyard and entrance, and one is the intersection
-        outside it at sunset. The photos are 4284 by 5712, so all the code works on copies scaled down to 2000 pixels
+        outside it at sunset. The photos are 4284 x 5712, so all the code works on copies scaled down to 2000 pixels
         on the long side.
     </p>
     <p>
@@ -261,6 +263,143 @@
         both directions, not just accurate, and that a scene only works if everything in it is far enough away that
         moving the phone slightly doesn't change the view. The balcony set and the bottom steps showed me exactly where
         the "same center of projection" assumption breaks.
+    </p>
+
+    <!-- ================================================================== -->
+    <h2>Part B · Feature Matching for Autostitching</h2>
+    <p>
+        Part B follows "Multi-Image Matching using Multi-Scale Oriented Patches" by Brown, Szeliski and Winder, with the
+        simplifications from the spec (one scale, no rotation, no wavelets). Everything runs on the same 2000 pixel
+        photos as Part A, and the end of the pipeline is the same <code>computeH</code>, bilinear warp and 2 band blend.
+    </p>
+
+    <h3>B.1 Harris Corners and ANMS</h3>
+    <p>
+        Corners come from the course's <code>harris.py</code>, which computes the corner strength
+        \(f_{HM} = \det \mathbf{H} / \operatorname{tr} \mathbf{H}\) of the smoothed gradient outer product at every
+        pixel and keeps every local maximum more than 20 pixels from the border. On the center courtyard photo that is
+        81,604 corners, almost all of them faint noise on the sky and the plain walls. Keeping the strongest 500 isn't
+        much better, since they all bunch up on the bright window grids and leave the rest of the photo empty, which is
+        bad for stitching because the overlap between two photos might have none of them.
+    </p>
+    <p>
+        Adaptive non-maximal suppression fixes that. Every corner gets a suppression radius, the distance to the nearest
+        corner that is clearly stronger than it,
+    </p>
+    \[r_i = \min_j \, \lVert \mathbf{x}_i - \mathbf{x}_j \rVert, \quad \text{s.t.} \;\; f(\mathbf{x}_i) < c_{\text{robust}}\, f(\mathbf{x}_j), \qquad c_{\text{robust}} = 0.9\]
+    <p>
+        and I keep the \(n_{ip} = 500\) corners with the largest radius. A corner survives either because it is very
+        strong or because nothing stronger is near it, so the 500 end up spread over the whole photo. Here every one
+        of them has a radius of at least 43 pixels. Comparing every pair of 81,604 corners would be 3.3 billion
+        distances, so I only run ANMS on the 20,000 strongest. Since those are sorted strongest first, the corners that can suppress corner \(i\) are
+        always among the ones before it.
+    </p>
+    <figure class="wide"><img src="out_path/b_corners.jpg" alt="Harris corners with and without ANMS" onerror="missing(this)">
+        <figcaption>All Harris corners, the strongest 500, and the 500 chosen by ANMS.</figcaption></figure>
+
+    <h3>B.2 Feature Descriptors</h3>
+    <p>
+        Each corner is described by an \(8 \times 8\) patch sampled every 5 pixels over the \(40 \times 40\) window
+        around it. I blur the image first with \(\sigma = 2\) so the 5 pixel spacing doesn't alias, which does the same
+        job as the paper's sampling from a coarser pyramid level. The low resolution makes the descriptor forgiving
+        when a corner is found a pixel or two off in the other photo. Then each patch is bias and gain normalized,
+        \(\hat{d} = (d - \mu) / \sigma\), so it doesn't matter that the phone exposed each photo differently.
+    </p>
+    <figure class="wide"><img src="out_path/b_descriptors.jpg" alt="feature descriptors" onerror="missing(this)">
+        <figcaption>Eight of the ANMS corners. Top is the \(40 \times 40\) window in color, bottom is the normalized
+            \(8 \times 8\) descriptor taken from it.</figcaption></figure>
+
+    <h3>B.3 Feature Matching</h3>
+    <p>
+        For every descriptor in one photo I find its nearest and second nearest descriptors in the other photo by
+        squared distance. The best distance alone is a poor test (the paper's Figure 6a), but the ratio
+        \(e_{1\text{-NN}} / e_{2\text{-NN}}\) works well. A correct match is much closer than anything else, while a wrong
+        one is about as far as the runner up. I keep matches with a ratio under 0.5, where Figure 6b shows the wrong
+        matches have mostly dropped out. Below is the same plot for my own left and center courtyard photos, using the
+        final homography to tell which nearest neighbors were really the right feature. The split looks just like
+        the paper's.
+    </p>
+    <figure class="solo"><img src="out_path/b_ratios.jpg" alt="ratio distribution" onerror="missing(this)">
+        <figcaption>\(e_{1\text{-NN}} / e_{2\text{-NN}}\) for every corner of the left courtyard photo that lands
+            inside the center photo. The dashed line is the 0.5 cutoff.</figcaption></figure>
+    <figure class="wide"><img src="out_path/b_matches.jpg" alt="matched features" onerror="missing(this)">
+        <figcaption>The 72 matches that pass the ratio test between the left and center courtyard photos.</figcaption></figure>
+
+    <h3>B.4 RANSAC and Automatic Mosaics</h3>
+    <p>
+        Even after the ratio test, plenty of matches are wrong. The big arched windows are grids of identical panes,
+        so a corner of one pane can confidently match a corner of the pane next to it. Least squares on all of them
+        would be pulled way off, so I wrote 4 point RANSAC.
+    </p>
+    <ol>
+        <li>Pick 4 random matches and compute the exact \(H\) through them.</li>
+        <li>Send every matched point through that \(H\) and count the inliers, the matches that land within 2 pixels
+            of their partner.</li>
+        <li>Repeat 5000 times and keep the \(H\) with the most inliers.</li>
+        <li>Refit \(H\) with least squares on all its inliers, recount the inliers with the new \(H\), and repeat until
+            the set stops changing.</li>
+    </ol>
+    <p>
+        About 40% of the matches are inliers, so a random sample is all inliers with probability
+        \(0.4^4 \approx 2.6\%\), and the chance that none of the 5000 samples is clean is around
+        \(10^{-56}\). I also tried looser cutoffs of 3 and 4 pixels and more corners (1000 instead of 500), and
+        neither made the alignment better overall.
+    </p>
+    <figure class="wide"><img src="out_path/b_ransac.jpg" alt="RANSAC inliers" onerror="missing(this)">
+        <figcaption>RANSAC on the courtyard pair. Green are the 31 inliers. Orange matches found the right feature
+            but land 2 to 10 pixels off, mostly around the arched windows, which a single flat homography can't fit
+            perfectly. Red are wrong matches, many of them between neighboring window panes.</figcaption></figure>
+    <p>
+        The automatic homographies then go into the exact same <code>stitch</code> function as Part A. Across all six
+        pairs the ratio test kept 66 to 144 matches and RANSAC kept 28 to 57 of them, and the points I clicked by hand in
+        Part A land 4 to 8 pixels from where the automatic \(H\) puts them, about the same as the error of my clicks
+        themselves.
+    </p>
+
+    <h3>Courtyard</h3>
+    <div class="pair">
+        <figure class="mosaic"><img src="out_path/tower_mosaic.jpg" alt="courtyard manual" onerror="missing(this)"><figcaption>Manual (Part A)</figcaption></figure>
+        <figure class="mosaic"><img src="out_path/tower_auto_mosaic.jpg" alt="courtyard automatic" onerror="missing(this)"><figcaption>Automatic</figcaption></figure>
+    </div>
+
+    <h3>Street</h3>
+    <div class="pair">
+        <figure class="mosaic"><img src="out_path/street_mosaic.jpg" alt="street manual" onerror="missing(this)"><figcaption>Manual (Part A)</figcaption></figure>
+        <figure class="mosaic"><img src="out_path/street_auto_mosaic.jpg" alt="street automatic" onerror="missing(this)"><figcaption>Automatic</figcaption></figure>
+    </div>
+    <figure class="wide"><img src="out_path/street_auto_vs_manual.jpg" alt="street close up" onerror="missing(this)">
+        <figcaption>The crosswalk where the center and right photos meet, manual on the left and automatic on the right.
+            With my 16 clicks the stripes jump by a few pixels at the seam. The automatic \(H\) comes from 57 matches
+            that all agree to within 2 pixels, and the stripes line up.</figcaption></figure>
+
+    <h3>Entrance</h3>
+    <div class="pair">
+        <figure class="mosaic"><img src="out_path/stairs_mosaic.jpg" alt="entrance manual" onerror="missing(this)"><figcaption>Manual (Part A)</figcaption></figure>
+        <figure class="mosaic"><img src="out_path/stairs_auto_mosaic.jpg" alt="entrance automatic" onerror="missing(this)"><figcaption>Automatic</figcaption></figure>
+    </div>
+    <figure class="wide"><img src="out_path/stairs_auto_vs_manual.jpg" alt="entrance close ups" onerror="missing(this)">
+        <figcaption>Manual on the left, automatic on the right. The automatic version fixes the seam on the steps from
+            Part A, but the dot between INTERNATIONAL and HOUSE now shows up twice.</figcaption></figure>
+    <p>
+        The entrance is the most interesting one. The brick steps are full of strong corners, so most of the automatic
+        matches are on the steps, and RANSAC picks the homography that fits the largest group of agreeing matches. The
+        steps are much closer to the camera than the building, so they shift a little differently between shots, and
+        no single homography fits both. My clicks were mostly on the building, so the manual mosaic lines up the
+        building and leaves a seam on the steps. RANSAC went the other way and lined up the steps. Neither is wrong,
+        they just made different choices about which part of the scene to fit. Because the two groups of matches are
+        close in size, the choice is fragile too. When I re-saved the photos as smaller JPEGs, the tiny compression
+        changes moved enough corners that RANSAC landed on a slightly different homography and the balcony roof came
+        out with a visible break.
+    </p>
+
+    <h3>What I Learned</h3>
+    <p>
+        The most satisfying part was the ratio test plot. I made it to check my threshold and it came out looking
+        just like Figure 6b in the paper, from completely different photos. It made the idea click that a match is
+        trustworthy not because it is close, but because it is much closer than the alternative. I also learned that
+        RANSAC doesn't know what I care about. It finds the biggest group of matches that agree, and on the entrance
+        that was the steps instead of the building, which is a decision I had been making without noticing every
+        time I chose where to click in Part A.
     </p>
 
 </body>
